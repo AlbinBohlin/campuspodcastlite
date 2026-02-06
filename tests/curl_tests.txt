@@ -1,0 +1,32 @@
+7. Test the flow (curl examples)
+Register
+
+Bashcurl -X POST http://localhost:5000/register ^
+  -H "Content-Type: application/json" ^
+  -d "{\"username\": \"albin\", \"password\": \"test123\"}"
+
+Login (saves tokens in cookies)
+
+Bashcurl -X POST http://localhost:5000/login ^
+  -H "Content-Type: application/json" ^
+  -d "{\"username\": \"albin\", \"password\": \"test123\"}" ^
+  -c cookies.txt  # save cookies to file
+
+Create episode (uses saved cookies)
+
+Bashcurl -X POST http://localhost:5000/episode ^
+  -H "Content-Type: application/json" ^
+  -b cookies.txt ^
+  -d "{\"title\": \"My Ep\", \"file_path\": \"test.wav\", \"collection_id\": 1}"
+
+Refresh token (when access expires)
+
+Bashcurl -X POST http://localhost:5000/refresh ^
+  -b cookies.txt ^
+  -c cookies.txt
+  
+Logout
+
+Bashcurl -X POST http://localhost:5000/logout ^
+  -b cookies.txt ^
+  -c cookies.txt

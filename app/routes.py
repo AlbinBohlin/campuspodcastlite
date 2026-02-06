@@ -1,8 +1,11 @@
 # API Endpoints
 
 from flask import Blueprint, jsonify, request, send_file, abort, current_app
+from flask_jwt_extended import create_access_token, create_refresh_token, jwt_required, get_jwt_identity, set_access_cookies, set_refresh_cookies, unset_jwt_cookies
 from werkzeug.utils import secure_filename
-from models import db, Episode, Collection  # adjust if you have separate models.py
+from werkzeug.security import generate_password_hash, check_password_hash
+from models import db, Episode, Collection, User 
+from utils import hash_password, check_password
 import uuid
 import os
 
@@ -141,6 +144,7 @@ def add_collection():
 
 # 5. When creating episode → require collection_id
 @bp.route('/episode', methods=['POST'])
+@jwt_required()  # need login for create
 def add_episode():
     data = request.json
     required = ['title', 'file_path', 'collection_id']
@@ -201,3 +205,66 @@ def upload_audio():
         }), 201
     
     return jsonify({"error": "Invalid file type"}), 400
+
+
+
+# ------------------- Auth Endpoints ----------------------------
+
+# Register
+@bp.route('/register', methods=['POST'])
+def register():
+    data = request.json
+    if not data or not data.get('username') or not data.get('password'):
+        return jsonify({"error": "Missing username or password"}), 400
+    
+    if User.query.filter_by(username=data['username']).first():
+        return jsonify({"error": "Username already taken"}), 400
+    
+    user = User(
+        username=data['username'],
+        password_hash=hash_password(data['password'])
+    )
+    db.session.add(user)
+    db.session.commit()
+    
+    return jsonify({"message": "User registered"}), 201
+
+# Login
+@bp.route('/login', methods=['POST'])
+def login():
+    data = request.json
+    user = User.query.filter_by(username=data.get('username')).first()
+    
+    if not user or not check_password(user.password_hash, data.get('password')):
+        return jsonify({"error": "Invalid credentials"}), 401
+    
+    # Create tokens
+    access_token = create_access_token(identity=user.id)
+    refresh_token = create_refresh_token(identity=user.id)
+    
+    response = jsonify({"message": "Logged in"})
+    
+    # Set tokens in cookies
+    set_access_cookies(response, access_token)
+    set_refresh_cookies(response, refresh_token)
+    
+    return response, 200
+
+# Logout
+@bp.route('/logout', methods=['POST'])
+@jwt_required()
+def logout():
+    response = jsonify({"message": "Logged out"})
+    unset_jwt_cookies(response)
+    return response, 200
+
+# Refresh token endpoint
+@bp.route('/refresh', methods=['POST'])
+@jwt_required(refresh=True)
+def refresh():
+    current_user_id = get_jwt_identity()
+    access_token = create_access_token(identity=current_user_id)
+    
+    response = jsonify({"message": "Token refreshed"})
+    set_access_cookies(response, access_token)
+    return response, 200
