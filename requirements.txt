@@ -6,3 +6,7 @@
 # flask
 # justhtml
 # flask_sqlalchemy
+# flask-jwt-extended-4.7.1
+# pytest 
+# pytest-flask 
+# requests
