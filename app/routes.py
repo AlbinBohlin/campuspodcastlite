@@ -5,7 +5,7 @@ from flask_jwt_extended import create_access_token, create_refresh_token, jwt_re
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 from models import db, Episode, Collection, User 
-from utils import hash_password, check_password
+from utils import ALLOWED_CATEGORIES, hash_password, check_password
 import uuid
 import os
 
@@ -21,8 +21,32 @@ bp = Blueprint('api', __name__, url_prefix='')
 # 1. List all shows
 @bp.route('/collections', methods=['GET'])
 def get_Collections():
-    shows = Collection.query.all()
-    return jsonify([s.to_dict() for s in shows])
+
+    query = Collection.query
+
+    # Filter by user/creator
+    user_id = request.args.get('user_id', type=int)
+    if user_id:
+        query = query.filter_by(user_id=user_id)
+
+    # Filter by category
+    category = request.args.get('category')
+    if category:
+        query = query.filter(Collection.category.ilike(f"%{category}%"))
+
+    # Optional: pagination if many collections
+    page = request.args.get('page', 1, type=int)
+    limit = request.args.get('limit', 20, type=int)
+    pagination = query.paginate(page=page, per_page=limit, error_out=False)
+
+    return jsonify({
+        "collections": [c.to_dict() for c in pagination.items],
+        "total": pagination.total,
+        "pages": pagination.pages,
+        "current_page": pagination.page,
+        "filters": {"user_id": user_id, "category": category}
+    }), 200
+
 
 # 2. Get one show + its episodes (very useful for frontend)
 @bp.route('/collections/<int:collection_id>', methods=['GET'])
@@ -61,6 +85,17 @@ def get_episodes():
             (Episode.description.ilike(search_term))
         )
 
+    # filter by category
+    category = request.args.get('category')
+    if category:
+        query = query.filter(Episode.category.ilike(f"%{category}%"))
+
+    # filter by user/creator
+    user_id = request.args.get('user_id', type=int)
+    if user_id:
+        query = query.filter_by(user_id=user_id)
+
+
     # Sorting
     sort = request.args.get('sort', 'newest')
     if sort == 'newest':
@@ -88,7 +123,9 @@ def get_episodes():
         "applied_filters": {
             "collection_id": collection_id if collection_id else None,
             "search": search if search else None,
-            "sort": sort
+            "sort": sort,
+            "category": category if category else None,
+            "user_id": user_id
         }
     }), 200
 
@@ -125,6 +162,9 @@ def stream_episode(episode_id):
         conditional=True,  # Handles range requests
         as_attachment=False  # Streams instead of downloading
     )
+
+# -----------
+
 # 4. Create new collection (for creators)
 @bp.route('/collection', methods=['POST'])
 def add_collection():
@@ -146,6 +186,8 @@ def add_collection():
 @bp.route('/episode', methods=['POST'])
 @jwt_required()  # need login for create
 def add_episode():
+
+    current_user_id = get_jwt_identity()  # from JWT
     data = request.json
     required = ['title', 'file_path', 'collection_id']
     if not data or not all(k in data for k in required):
@@ -163,11 +205,20 @@ def add_episode():
     if not Collection.query.get(data['collection_id']):
         abort(404, "Show not found")
     
+
+    category = data.get('category')
+    if category and category not in ALLOWED_CATEGORIES:
+        return jsonify({
+            "error": f"Invalid category. Allowed: {', '.join(sorted(ALLOWED_CATEGORIES))}"
+        }), 400
+
     episode = Episode(
         title=data['title'],
         description=data.get('description'),
         file_path=data['file_path'],
-        collection_id=data['collection_id']
+        collection_id=data['collection_id'],
+        category=data.get('category'),          # optional
+        user_id=current_user_id                 
     )
     db.session.add(episode)
     db.session.commit()
@@ -206,7 +257,49 @@ def upload_audio():
     
     return jsonify({"error": "Invalid file type"}), 400
 
+# ------------------- Editfields Endpoints -----------------------
 
+# Add category to an existing episode (after upload)
+@bp.route('/episode/<int:episode_id>/category', methods=['POST'])
+@jwt_required()  # optional – if you want only logged-in users to set category
+def set_episode_category(episode_id):
+    episode = Episode.query.get_or_404(episode_id)
+    data = request.json
+    
+    if not data or 'category' not in data:
+        abort(400, description="Missing 'category' in JSON body")
+    
+    episode.category = data['category'].strip()[:25]  # max 25 char in name
+    db.session.commit()
+    
+    return jsonify({
+        "message": "Category updated",
+        "episode_id": episode.id,
+        "category": episode.category
+    }), 200
+
+
+# Optional: Update multiple fields including category (full edit)
+@bp.route('/episode/<int:episode_id>', methods=['PUT'])
+@jwt_required()
+def update_episode(episode_id):
+    episode = Episode.query.get_or_404(episode_id)
+    data = request.json
+    
+    if not data:
+        abort(400, description="No data provided")
+    
+    if 'title' in data:
+        episode.title = data['title']
+    if 'description' in data:
+        episode.description = data['description']
+    if 'category' in data:
+        episode.category = data['category'].strip()[:100]
+    # add more fields if needed
+    
+    db.session.commit()
+    
+    return jsonify(episode.to_dict()), 200
 
 # ------------------- Auth Endpoints ----------------------------
 
