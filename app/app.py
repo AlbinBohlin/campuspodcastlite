@@ -3,13 +3,18 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_jwt_extended import JWTManager
 from models import Collection, db
 from routes import bp
+from flask_cors import CORS
 import os
 
 app = Flask(__name__)
 
+CORS(app, supports_credentials=True, origins="http://localhost:5173")
+
+basedir = os.path.abspath(os.path.dirname(__file__))
+
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///podcasts.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['MEDIA_FOLDER'] = './media_test'  # Folder for your MP3 files
+app.config['MEDIA_FOLDER'] = os.path.join(basedir, '..', 'media_test')
 
 
 # ── JWT Config ────────────────────────────────────────
@@ -24,12 +29,14 @@ app.config['JWT_TOKEN_LOCATION'] = ['cookies']        # store tokens in cookies
 app.config['JWT_COOKIE_CSRF_PROTECT'] = True          # enables CSRF protection (recommended)
 app.config['JWT_COOKIE_SECURE'] = False               # ← False for localhost (http), True in production (https)
 app.config['JWT_COOKIE_SAMESITE'] = 'Lax'             # good default
+app.config['JWT_ACCESS_CSRF_HEADER_NAME'] = "X-CSRF-TOKEN"
+app.config['JWT_REFRESH_CSRF_HEADER_NAME'] = "X-CSRF-TOKEN"
 
 # Initialize JWT
 jwt = JWTManager(app)
 
 
-UPLOAD_FOLDER = './media_test'
+UPLOAD_FOLDER = app.config['MEDIA_FOLDER']
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
@@ -48,10 +55,5 @@ def index():
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
-        if not Collection.query.filter_by(name="Default Podcast").first():
-            default_show = Collection(name="Default Podcast", description="Fallback show for uncategorized episodes")
-            db.session.add(default_show)
-            db.session.commit()
-            print("Default show created with ID:", default_show.id)
-    app.run(debug=True, host='localhost', port=5000)
+    app.run(debug=True, host='localhost', port=5001 )
 

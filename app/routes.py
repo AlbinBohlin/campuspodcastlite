@@ -50,6 +50,15 @@ def get_Collections():
     if category:
         query = query.filter(Collection.category.ilike(f"%{category}%"))
 
+    # Sorting
+    sort = request.args.get('sort', 'newest')
+    if sort == 'newest':
+        query = query.order_by(Collection.id.desc())
+    elif sort == 'oldest':
+        query = query.order_by(Collection.id.asc())
+    elif sort == 'name':
+        query = query.order_by(Collection.name.asc())
+        
     # Optional: pagination if many collections
     page = request.args.get('page', 1, type=int)
     limit = request.args.get('limit', 20, type=int)
@@ -63,7 +72,6 @@ def get_Collections():
         "filters": {"user_id": user_id, "category": category}
     }), 200
 
-
 # 2. Get one show + its episodes (very useful for frontend)
 @bp.route('/collections/<int:collection_id>', methods=['GET'])
 def get_Collection(collection_id):
@@ -74,6 +82,19 @@ def get_Collection(collection_id):
         'episodes': [e.to_dict() for e in episodes]
     })
 
+@bp.route('/episodes/recent', methods=['GET'])
+def get_recent_episodes():
+    limit = min(request.args.get('limit', 10, type=int), 50)
+    episodes = Episode.query.order_by(Episode.id.desc()).limit(limit).all()
+    
+    return jsonify({
+        "episodes": [ep.to_dict() for ep in episodes],
+        "total": len(episodes),
+        "pages": 1,
+        "current_page": 1,
+        "applied_filters": {}
+    }), 200
+        
 @bp.route('/episodes', methods=['GET'])
 def get_episodes():
     """
@@ -192,7 +213,9 @@ def stream_episode(episode_id):
 
 # 4. Create new collection (for creators)
 @bp.route('/collection', methods=['POST'])
+@jwt_required()
 def add_collection():
+    current_user_id = get_jwt_identity()
     data = request.json
     if not data or not data.get('name'):
         abort(400, "Missing name")
@@ -200,7 +223,8 @@ def add_collection():
     show = Collection(
         name=data['name'],
         description=data.get('description'),
-        creator_name=data.get('creator_name')
+        creator_name=data.get('creator_name'),
+        user_id=int(current_user_id) 
     )
     db.session.add(show)
     db.session.commit()
@@ -333,9 +357,45 @@ def update_episode(episode_id):
     
     return jsonify(episode.to_dict()), 200
 
-# ------------------- Auth Endpoints ----------------------------
+@bp.route('/collections/<int:collection_id>', methods=['PUT'])
+@jwt_required()
+def update_collection(collection_id):
+    collection = Collection.query.get_or_404(collection_id)
+    current_user_id = get_jwt_identity()
+
+    if collection.user_id != int(current_user_id):
+        return jsonify({"error": "Unauthorized"}), 403
+
+    data = request.json
+    if not data:
+        abort(400, description="No data provided")
+
+    if 'name' in data:
+        collection.name = data['name']
+    if 'description' in data:
+        collection.description = data['description']
+    if 'creator_name' in data:
+        collection.creator_name = data['creator_name']
+
+    db.session.commit()
+    return jsonify(collection.to_dict()), 200
 
 
+@bp.route('/collections/<int:collection_id>', methods=['DELETE'])
+@jwt_required()
+def delete_collection(collection_id):
+    collection = Collection.query.get_or_404(collection_id)
+    current_user_id = get_jwt_identity()
+    requesting_user = User.query.get(int(current_user_id))
+
+    if collection.user_id != int(current_user_id) and requesting_user.role != 'admin':
+        return jsonify({"error": "Unauthorized"}), 403
+
+    Episode.query.filter_by(collection_id=collection_id).delete()
+
+    db.session.delete(collection)
+    db.session.commit()
+    return jsonify({"message": "Collection deleted"}), 200
 
 
 """ 
@@ -377,8 +437,8 @@ def login():
         return jsonify({"error": "Invalid credentials"}), 401
     
     # Create tokens
-    access_token = create_access_token(identity=user.id)
-    refresh_token = create_refresh_token(identity=user.id)
+    access_token = create_access_token(identity=str(user.id))
+    refresh_token = create_refresh_token(identity=str(user.id))
     
     response = jsonify({"message": "Logged in"})
     
@@ -406,3 +466,108 @@ def refresh():
     response = jsonify({"message": "Token refreshed"})
     set_access_cookies(response, access_token)
     return response, 200
+
+@bp.route('/me', methods=['GET'])
+@jwt_required(optional=True)
+def me():
+    user_id = get_jwt_identity()
+    if user_id is None:
+        return jsonify(None), 200 
+        
+    user = User.query.get(int(user_id))
+    if not user:
+        return jsonify(None), 200
+        
+    return jsonify({"id": user.id, "username": user.username, "role": user.role}), 200
+
+# ------------------- Admin Endpoints ----------------------------
+
+@bp.route('/users', methods=['GET'])
+@jwt_required()
+def get_all_users():
+    current_user_id = get_jwt_identity()
+    admin_user = User.query.get(int(current_user_id))
+
+    if not admin_user or admin_user.role != 'admin':
+        return jsonify({"error": "Admin privileges required"}), 403
+
+    page = request.args.get('page', 1, type=int)
+    limit = request.args.get('limit', 50, type=int)
+    
+    pagination = User.query.paginate(page=page, per_page=limit, error_out=False)
+    users = pagination.items
+
+    return jsonify({
+        "users": [
+            {
+                "id": u.id, 
+                "username": u.username, 
+                "role": u.role,
+            } for u in users
+        ],
+        "total": pagination.total,
+        "pages": pagination.pages,
+        "current_page": pagination.page
+    }), 200
+
+@bp.route('/users', methods=['POST'])
+@jwt_required()
+def admin_add_user():
+    """
+    Admin-only: Create a new user with a specific role.
+    """
+    current_user_id = get_jwt_identity()
+    admin_user = User.query.get(int(current_user_id))
+
+    if not admin_user or admin_user.role != 'admin':
+        return jsonify({"error": "Admin privileges required"}), 403
+
+    data = request.json
+    if not data or not data.get('username') or not data.get('password'):
+        return jsonify({"error": "Username and password required"}), 400
+
+    if User.query.filter_by(username=data['username']).first():
+        return jsonify({"error": "Username already exists"}), 400
+
+    new_user = User(
+        username=data['username'],
+        password_hash=hash_password(data['password']),
+        role=data.get('role', 'user') 
+    )
+    
+    db.session.add(new_user)
+    db.session.commit()
+    
+    return jsonify({"message": "User created successfully", "user": {"id": new_user.id, "username": new_user.username, "role": new_user.role}}), 201
+
+
+@bp.route('/users/<int:user_id>', methods=['PUT'])
+@jwt_required()
+def admin_edit_user(user_id):
+    current_user_id = get_jwt_identity()
+    admin_user = User.query.get(int(current_user_id))
+
+    if not admin_user or admin_user.role != 'admin':
+        return jsonify({"error": "Admin privileges required"}), 403
+
+    target_user = User.query.get_or_404(user_id)
+    data = request.json
+
+    if 'username' in data:
+        existing = User.query.filter_by(username=data['username']).first()
+        if existing and existing.id != target_user.id:
+            return jsonify({"error": "Username already taken"}), 400
+        target_user.username = data['username']
+
+    if 'role' in data:
+        target_user.role = data['role']
+
+    if 'password' in data:
+        target_user.password_hash = hash_password(data['password'])
+
+    db.session.commit()
+    
+    return jsonify({
+        "message": "User updated",
+        "user": {"id": target_user.id, "username": target_user.username, "role": target_user.role}
+    }), 200

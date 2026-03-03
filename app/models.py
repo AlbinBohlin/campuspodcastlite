@@ -22,6 +22,7 @@ class Collection(db.Model):
             'name': self.name,
             'description': self.description,
             'creator_name': self.creator_name,
+            "cover_image_path": self.cover_image_path,
             'category': self.category,
             'user_id': self.user_id,
             'username': self.user.username if self.user else None
