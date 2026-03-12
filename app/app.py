@@ -29,8 +29,10 @@ app.config['JWT_TOKEN_LOCATION'] = ['cookies']        # store tokens in cookies
 app.config['JWT_COOKIE_CSRF_PROTECT'] = True          # enables CSRF protection (recommended)
 app.config['JWT_COOKIE_SECURE'] = False               # ← False for localhost (http), True in production (https)
 app.config['JWT_COOKIE_SAMESITE'] = 'Lax'             # good default
+app.config['JWT_ACCESS_CSRF_COOKIE_NAME'] = "csrf_access_token"
+app.config['JWT_REFRESH_CSRF_COOKIE_NAME'] = "csrf_refresh_token"
 app.config['JWT_ACCESS_CSRF_HEADER_NAME'] = "X-CSRF-TOKEN"
-app.config['JWT_REFRESH_CSRF_HEADER_NAME'] = "X-CSRF-TOKEN"
+app.config['JWT_REFRESH_CSRF_HEADER_NAME'] = "X-REFRESH-CSRF-TOKEN"
 
 # Initialize JWT
 jwt = JWTManager(app)
